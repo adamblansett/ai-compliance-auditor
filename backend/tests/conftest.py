@@ -23,6 +23,7 @@ VIEWER_HEADERS = {
 def make_test_app(tmp_path: Path, **overrides: Any) -> FastAPI:
     """Create an isolated FastAPI app backed by a per-test SQLite file."""
     db_file = tmp_path / "test_compliance_auditor.db"
+    overrides.setdefault("rate_limit_enabled", False)
     cfg = Settings(
         database_url=f"sqlite+aiosqlite:///{db_file.as_posix()}",
         llm_default_provider="mock",

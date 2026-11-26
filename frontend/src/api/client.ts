@@ -1,8 +1,12 @@
 import type {
   ActorContext,
+  ActorRole,
+  AlertEventItem,
+  AlertWebhookItem,
   ApprovalRequestItem,
   AuditChainVerify,
   AuditEventItem,
+  AuthSessionResponse,
   BundleVerifyResult,
   ControlCreateInput,
   ControlItem,
@@ -15,12 +19,17 @@ import type {
   LegalHoldItem,
   OverviewSummary,
   PiiRedactResult,
+  PolicyCitationItem,
+  PolicyDocumentItem,
+  RagQueryResponse,
   RegulationType,
+  RepoFileInput,
   RetentionExceptionItem,
   RetentionPolicyItem,
   ScanFindingItem,
   ScanRunItem,
   ScannerPreset,
+  ScheduledScanItem,
   SeedSummary,
   TargetType,
 } from '../types/compliance';
@@ -35,14 +44,23 @@ export class ApiClientError extends Error {
   }
 }
 
+function buildActorHeaders(actor: ActorContext, baseHeaders?: HeadersInit): Headers {
+  const headers = new Headers(baseHeaders);
+  if (actor.bearerToken) {
+    headers.set('Authorization', `Bearer ${actor.bearerToken}`);
+  } else {
+    headers.set('X-Actor-Email', actor.email);
+    headers.set('X-Actor-Role', actor.role);
+  }
+  return headers;
+}
+
 async function requestJson<T>(
   path: string,
   actor: ActorContext,
   init: RequestInit = {},
 ): Promise<T> {
-  const headers = new Headers(init.headers);
-  headers.set('X-Actor-Email', actor.email);
-  headers.set('X-Actor-Role', actor.role);
+  const headers = buildActorHeaders(actor, init.headers);
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
@@ -64,7 +82,19 @@ async function requestJson<T>(
     }
     throw new ApiClientError(message, response.status);
   }
+  if (response.status === 204) {
+    return undefined as T;
+  }
   return (await response.json()) as T;
+}
+
+async function requestBlob(path: string, actor: ActorContext): Promise<Blob> {
+  const headers = buildActorHeaders(actor);
+  const response = await fetch(path, { headers });
+  if (!response.ok) {
+    throw new ApiClientError(`Download failed (${response.status})`, response.status);
+  }
+  return response.blob();
 }
 
 export async function fetchHealth(): Promise<HealthStatus> {
@@ -73,6 +103,50 @@ export async function fetchHealth(): Promise<HealthStatus> {
     throw new ApiClientError('API health check failed', response.status);
   }
   return (await response.json()) as HealthStatus;
+}
+
+export async function loginUser(email: string, password: string): Promise<AuthSessionResponse> {
+  const response = await fetch('/api/v1/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!response.ok) {
+    let message = `Login failed (${response.status})`;
+    try {
+      const data = (await response.json()) as { detail?: string };
+      if (data.detail) message = data.detail;
+    } catch {
+      // ignore
+    }
+    throw new ApiClientError(message, response.status);
+  }
+  return (await response.json()) as AuthSessionResponse;
+}
+
+export async function registerUser(
+  payload: { email: string; full_name: string; password: string; role: ActorRole },
+  actor?: ActorContext,
+): Promise<AuthSessionResponse> {
+  const headers = actor
+    ? buildActorHeaders(actor, { 'Content-Type': 'application/json' })
+    : new Headers({ 'Content-Type': 'application/json' });
+  const response = await fetch('/api/v1/auth/register', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let message = `Registration failed (${response.status})`;
+    try {
+      const data = (await response.json()) as { detail?: string };
+      if (data.detail) message = data.detail;
+    } catch {
+      // ignore
+    }
+    throw new ApiClientError(message, response.status);
+  }
+  return (await response.json()) as AuthSessionResponse;
 }
 
 export function fetchOverview(actor: ActorContext): Promise<OverviewSummary> {
@@ -189,6 +263,61 @@ export function uploadScanArtifact(
   });
 }
 
+export function scanRepository(
+  actor: ActorContext,
+  payload: {
+    target_name: string;
+    repo_path?: string;
+    files?: RepoFileInput[];
+    auto_evaluate_controls?: boolean;
+  },
+): Promise<ScanRunItem> {
+  return requestJson<ScanRunItem>('/api/v1/scanners/scan-repo', actor, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function probeLiveUrl(
+  actor: ActorContext,
+  payload: {
+    target_name: string;
+    url: string;
+    auto_evaluate_controls?: boolean;
+  },
+): Promise<ScanRunItem> {
+  return requestJson<ScanRunItem>('/api/v1/scanners/probe-url', actor, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchScheduledScans(actor: ActorContext): Promise<ScheduledScanItem[]> {
+  return requestJson<ScheduledScanItem[]>('/api/v1/scanners/schedules', actor);
+}
+
+export function createScheduledScan(
+  actor: ActorContext,
+  payload: {
+    name: string;
+    scan_mode: 'repo_path' | 'url_probe' | 'preset';
+    target_ref: string;
+    target_type: TargetType;
+    interval_minutes: number;
+  },
+): Promise<ScheduledScanItem> {
+  return requestJson<ScheduledScanItem>('/api/v1/scanners/schedules', actor, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function runScheduledScan(actor: ActorContext, scheduleId: string): Promise<ScanRunItem> {
+  return requestJson<ScanRunItem>(`/api/v1/scanners/schedules/${scheduleId}/run`, actor, {
+    method: 'POST',
+  });
+}
+
 export function fetchBundles(actor: ActorContext): Promise<EvidenceBundleItem[]> {
   return requestJson<EvidenceBundleItem[]>('/api/v1/evidence/bundles', actor);
 }
@@ -220,6 +349,14 @@ export function exportBundle(
   bundleId: string,
 ): Promise<EvidenceBundleExport> {
   return requestJson<EvidenceBundleExport>(`/api/v1/evidence/bundles/${bundleId}/export`, actor);
+}
+
+export function downloadBundlePdf(actor: ActorContext, bundleId: string): Promise<Blob> {
+  return requestBlob(`/api/v1/evidence/bundles/${bundleId}/report.pdf`, actor);
+}
+
+export function downloadBundleZip(actor: ActorContext, bundleId: string): Promise<Blob> {
+  return requestBlob(`/api/v1/evidence/bundles/${bundleId}/export-zip`, actor);
 }
 
 export function verifyBundlePayload(
@@ -385,4 +522,86 @@ export function requestRetentionException(
       body: JSON.stringify(payload),
     },
   );
+}
+
+export function fetchPolicyDocuments(actor: ActorContext): Promise<PolicyDocumentItem[]> {
+  return requestJson<PolicyDocumentItem[]>('/api/v1/rag/documents', actor);
+}
+
+export function ingestPolicyDocument(
+  actor: ActorContext,
+  payload: {
+    title: string;
+    filename: string;
+    framework: 'SOC2' | 'HIPAA' | 'GDPR' | 'ALL';
+    version: string;
+    content: string;
+  },
+): Promise<PolicyDocumentItem> {
+  return requestJson<PolicyDocumentItem>('/api/v1/rag/documents', actor, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function queryPolicyRag(
+  actor: ActorContext,
+  payload: { query: string; framework?: string; top_k?: number },
+): Promise<RagQueryResponse> {
+  return requestJson<RagQueryResponse>('/api/v1/rag/query', actor, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchControlCitations(
+  actor: ActorContext,
+  controlCode: string,
+): Promise<PolicyCitationItem[]> {
+  return requestJson<PolicyCitationItem[]>(
+    `/api/v1/rag/controls/${encodeURIComponent(controlCode)}/citations`,
+    actor,
+  );
+}
+
+export function fetchAlerts(actor: ActorContext): Promise<AlertEventItem[]> {
+  return requestJson<AlertEventItem[]>('/api/v1/alerts', actor);
+}
+
+export function evaluateDriftAlerts(actor: ActorContext): Promise<AlertEventItem[]> {
+  return requestJson<AlertEventItem[]>('/api/v1/alerts/evaluate', actor, {
+    method: 'POST',
+  });
+}
+
+export function acknowledgeAlert(actor: ActorContext, alertId: string): Promise<AlertEventItem> {
+  return requestJson<AlertEventItem>(`/api/v1/alerts/${alertId}/acknowledge`, actor, {
+    method: 'POST',
+  });
+}
+
+export function resolveAlert(actor: ActorContext, alertId: string): Promise<AlertEventItem> {
+  return requestJson<AlertEventItem>(`/api/v1/alerts/${alertId}/resolve`, actor, {
+    method: 'POST',
+  });
+}
+
+export function fetchWebhooks(actor: ActorContext): Promise<AlertWebhookItem[]> {
+  return requestJson<AlertWebhookItem[]>('/api/v1/alerts/webhooks', actor);
+}
+
+export function createWebhook(
+  actor: ActorContext,
+  payload: { name: string; target_url: string; event_types: string[]; secret_hmac?: string },
+): Promise<AlertWebhookItem> {
+  return requestJson<AlertWebhookItem>('/api/v1/alerts/webhooks', actor, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteWebhook(actor: ActorContext, webhookId: string): Promise<void> {
+  return requestJson<void>(`/api/v1/alerts/webhooks/${webhookId}`, actor, {
+    method: 'DELETE',
+  });
 }

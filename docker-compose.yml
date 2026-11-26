@@ -74,6 +74,25 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai-compliance-auditor-worker
+    profiles: ["worker"]
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-ai_compliance_auditor}
+      REDIS_URL: redis://redis:6379/0
+      TASK_EXECUTION_MODE: celery
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-dev-insecure-secret-change-in-production-32bytes}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   ollama_data:

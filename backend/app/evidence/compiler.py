@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Actor
+from app.core.config import get_settings
 from app.db.base import ensure_utc, utcnow
 from app.db.models import (
     AuditEvent,
@@ -24,6 +25,7 @@ from app.evidence.chain import (
     json_safe,
     record_audit_event,
 )
+from app.evidence.signing import sign_bundle_manifest
 from app.llm.router import LLMRouter
 
 
@@ -36,6 +38,7 @@ async def compile_evidence_bundle(
     period_end: date | None,
     llm_router: LLMRouter,
     actor: Actor,
+    signing_key: str | None = None,
 ) -> EvidenceBundle:
     """Compile a SHA-256 hash-chained evidence package and queue it for HITL release."""
     resolved_end = period_end or date.today()
@@ -284,6 +287,12 @@ async def compile_evidence_bundle(
         }
     )
     manifest_sha256 = compute_manifest_sha256(manifest)
+    resolved_signing_key = signing_key or get_settings().effective_signing_key
+    sig_info = sign_bundle_manifest(
+        manifest_sha256=manifest_sha256,
+        chain_head_hash=chain_head_hash,
+        signing_key=resolved_signing_key,
+    )
 
     llm_prompt = (
         f"Bundle={bundle_name}; Frameworks={','.join(norm_frameworks)}; "
@@ -309,6 +318,10 @@ async def compile_evidence_bundle(
         manifest_json=manifest,
         ai_attestation_summary=ai_res.content,
         compiled_by=actor.email,
+        signature_alg=sig_info["signature_alg"],
+        signature_key_id=sig_info["signature_key_id"],
+        signature_hex=sig_info["signature_hex"],
+        signed_at=utcnow(),
     )
     db.add(bundle)
     await db.flush()

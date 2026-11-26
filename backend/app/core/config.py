@@ -34,11 +34,22 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_default_model: str = "gemini-2.5-flash"
     llm_redact_pii_for_cloud: bool = True
+    embedding_provider: Literal["deterministic", "ollama"] = "deterministic"
+    embedding_dimensions: int = 384
 
     auth_secret_key: str = _DEFAULT_DEV_SECRET
+    bundle_signing_key: str = ""
     auth_require_token: bool = False
     enforce_separation_of_duties: bool = False
     dsar_default_sla_days: int = 30
+
+    rate_limit_enabled: bool = True
+    rate_limit_requests_per_minute: int = 120
+    otel_enabled: bool = False
+    otel_service_name: str = "ai-compliance-auditor"
+    task_execution_mode: Literal["inline", "celery"] = "inline"
+    redis_url: str = "redis://redis:6379/0"
+    allow_private_url_probes: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -47,6 +58,10 @@ class Settings(BaseSettings):
     @property
     def llm_fallback_list(self) -> list[str]:
         return [p.strip().lower() for p in self.llm_fallback_providers.split(",") if p.strip()]
+
+    @property
+    def effective_signing_key(self) -> str:
+        return self.bundle_signing_key.strip() or self.auth_secret_key
 
 
 @lru_cache(maxsize=1)

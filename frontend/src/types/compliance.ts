@@ -3,6 +3,30 @@ export type ActorRole = 'viewer' | 'auditor' | 'compliance_officer' | 'admin';
 export interface ActorContext {
   email: string;
   role: ActorRole;
+  bearerToken?: string;
+}
+
+export interface UserAccount {
+  id: string;
+  email: string;
+  full_name: string;
+  role: ActorRole;
+  is_active: boolean;
+  mfa_enabled: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface AuthSessionResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  actor: {
+    email: string;
+    role: ActorRole;
+    auth_method: string;
+  };
+  user: UserAccount;
 }
 
 export interface HealthStatus {
@@ -67,6 +91,8 @@ export interface OverviewSummary {
   dsar_metrics: DsarMetrics;
   active_legal_holds_count: number;
   retention_metrics: RetentionMetrics;
+  open_alerts_count?: number;
+  policy_documents_count?: number;
 }
 
 export interface SeedSummary {
@@ -78,12 +104,24 @@ export interface SeedSummary {
   legal_holds_count: number;
   retention_policies_count: number;
   pending_approvals_count: number;
+  users_count?: number;
+  policy_documents_count?: number;
+  scheduled_scans_count?: number;
+  open_alerts_count?: number;
   message: string;
 }
 
 export type FrameworkName = 'SOC2' | 'HIPAA' | 'GDPR';
 export type SeverityLevel = 'low' | 'medium' | 'high' | 'critical';
-export type TargetType = 'config' | 'encryption' | 'logging' | 'rbac' | 'sop' | 'full_suite';
+export type TargetType =
+  | 'config'
+  | 'encryption'
+  | 'logging'
+  | 'rbac'
+  | 'sop'
+  | 'full_suite'
+  | 'repo_bundle'
+  | 'url_probe';
 
 export interface ControlItem {
   id: string;
@@ -127,6 +165,26 @@ export interface ScannerPreset {
   artifact_filename: string;
   description: string;
   content: string;
+}
+
+export interface RepoFileInput {
+  path: string;
+  content: string;
+}
+
+export interface ScheduledScanItem {
+  id: string;
+  name: string;
+  scan_mode: 'repo_path' | 'url_probe' | 'preset';
+  target_ref: string;
+  target_type: TargetType;
+  interval_minutes: number;
+  is_active: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  last_scan_run_id: string | null;
+  created_by: string;
+  created_at: string;
 }
 
 export interface ScanFindingItem {
@@ -178,6 +236,10 @@ export interface EvidenceBundleItem {
   ai_attestation_summary: string;
   compiled_by: string;
   approval_id: string | null;
+  signature_alg?: string | null;
+  signature_key_id?: string | null;
+  signature_hex?: string | null;
+  signed_at?: string | null;
   released_by: string | null;
   released_at: string | null;
   created_at: string;
@@ -190,6 +252,9 @@ export interface EvidenceBundleExport {
   status: string;
   chain_head_hash: string;
   manifest_sha256: string;
+  signature_alg?: string | null;
+  signature_key_id?: string | null;
+  signature_hex?: string | null;
   manifest: Record<string, unknown>;
 }
 
@@ -314,4 +379,63 @@ export interface RetentionExceptionItem {
   approved_by: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface PolicyDocumentItem {
+  id: string;
+  title: string;
+  filename: string;
+  framework: string;
+  version: string;
+  document_sha256: string;
+  pii_redaction_count: number;
+  chunk_count: number;
+  uploaded_by: string;
+  created_at: string;
+}
+
+export interface PolicyCitationItem {
+  chunk_id: string;
+  document_id: string;
+  document_title: string;
+  framework: string;
+  section_heading: string;
+  chunk_index: number;
+  score: number;
+  mapped_controls: string[];
+  excerpt: string;
+}
+
+export interface RagQueryResponse {
+  query: string;
+  answer: string;
+  llm_provider: string;
+  pii_redacted: boolean;
+  citations: PolicyCitationItem[];
+}
+
+export interface AlertEventItem {
+  id: string;
+  alert_type: string;
+  severity: string;
+  title: string;
+  detail: string;
+  entity_type: string;
+  entity_id: string;
+  status: string;
+  dispatched_webhooks_count: number;
+  acknowledged_by: string | null;
+  acknowledged_at: string | null;
+  created_at: string;
+}
+
+export interface AlertWebhookItem {
+  id: string;
+  name: string;
+  target_url: string;
+  event_types_json: string[];
+  is_active: boolean;
+  last_delivery_status: string | null;
+  created_by: string;
+  created_at: string;
 }

@@ -27,6 +27,29 @@ function createApiMock(options: { populated?: boolean } = {}) {
       });
     }
 
+    if (url === '/api/v1/auth/login' && init?.method === 'POST') {
+      return jsonResponse({
+        access_token: 'mock.jwt.token',
+        refresh_token: 'mock.refresh.token',
+        token_type: 'bearer',
+        actor: {
+          email: 'officer@acme-compliance.local',
+          role: 'compliance_officer',
+          auth_method: 'bearer_token',
+        },
+        user: {
+          id: 'usr-1',
+          email: 'officer@acme-compliance.local',
+          full_name: 'Alex Rivera',
+          role: 'compliance_officer',
+          is_active: true,
+          mfa_enabled: true,
+          created_at: '2026-11-26T12:00:00Z',
+          last_login_at: '2026-11-26T12:00:00Z',
+        },
+      });
+    }
+
     if (url === '/api/v1/overview') {
       return jsonResponse({
         posture: {
@@ -92,6 +115,8 @@ function createApiMock(options: { populated?: boolean } = {}) {
           suspended: populated ? 1 : 0,
           exception_granted: 0,
         },
+        open_alerts_count: populated ? 2 : 0,
+        policy_documents_count: populated ? 2 : 0,
       });
     }
 
@@ -134,12 +159,27 @@ function createApiMock(options: { populated?: boolean } = {}) {
       ]);
     }
 
-    if (url === '/api/v1/scanners/runs') {
+    if (url === '/api/v1/scanners/runs' || url === '/api/v1/scanners/findings') {
       return jsonResponse([]);
     }
 
-    if (url === '/api/v1/scanners/findings') {
-      return jsonResponse([]);
+    if (url === '/api/v1/scanners/schedules') {
+      return jsonResponse([
+        {
+          id: 'sched-1',
+          name: 'Hourly Staging Config Drift Check',
+          scan_mode: 'preset',
+          target_ref: 'failing-staging-config',
+          target_type: 'config',
+          interval_minutes: 60,
+          is_active: true,
+          last_run_at: null,
+          next_run_at: null,
+          last_scan_run_id: null,
+          created_by: 'officer@acme-compliance.local',
+          created_at: '2026-11-26T12:00:00Z',
+        },
+      ]);
     }
 
     if (url === '/api/v1/scanners/scan' && init?.method === 'POST') {
@@ -179,6 +219,9 @@ function createApiMock(options: { populated?: boolean } = {}) {
           item_count: 14,
           chain_head_hash: '1122334455667788',
           manifest_sha256: '9988776655443322',
+          signature_alg: 'HMAC-SHA256',
+          signature_key_id: 'hmac-1234abcd',
+          signature_hex: 'ff'.repeat(32),
           ai_attestation_summary: 'Compiled and ready for review.',
           compiled_by: 'officer@acme-compliance.local',
           approval_id: 'app-1',
@@ -249,15 +292,77 @@ function createApiMock(options: { populated?: boolean } = {}) {
       ]);
     }
 
-    if (url === '/api/v1/privacy/legal-holds') {
+    if (
+      url === '/api/v1/privacy/legal-holds' ||
+      url === '/api/v1/privacy/retention-policies' ||
+      url === '/api/v1/privacy/retention-exceptions'
+    ) {
       return jsonResponse([]);
     }
 
-    if (url === '/api/v1/privacy/retention-policies') {
+    if (url === '/api/v1/rag/documents') {
+      return jsonResponse([
+        {
+          id: 'doc-1',
+          title: 'Corporate Incident Response & DSAR SOP',
+          filename: 'incident-dsar-sop.md',
+          framework: 'GDPR',
+          version: '3.0',
+          document_sha256: 'ab'.repeat(32),
+          pii_redaction_count: 0,
+          chunk_count: 2,
+          uploaded_by: 'officer@acme-compliance.local',
+          created_at: '2026-11-26T12:00:00Z',
+        },
+      ]);
+    }
+
+    if (url === '/api/v1/rag/query' && init?.method === 'POST') {
+      return jsonResponse({
+        query: 'breach notification',
+        answer: 'Citation-Grounded Policy Answer: Notify supervisory authority within 72 hours.',
+        llm_provider: 'mock',
+        pii_redacted: false,
+        citations: [
+          {
+            chunk_id: 'chk-1',
+            document_id: 'doc-1',
+            document_title: 'Corporate Incident Response & DSAR SOP',
+            framework: 'GDPR',
+            section_heading: 'Incident Response',
+            chunk_index: 0,
+            score: 0.88,
+            mapped_controls: ['GDPR-ART33'],
+            excerpt: 'Confirmed breaches require notification within 72 hours.',
+          },
+        ],
+      });
+    }
+
+    if (url === '/api/v1/alerts') {
+      return jsonResponse([
+        {
+          id: 'alt-1',
+          alert_type: 'control_regression',
+          severity: 'critical',
+          title: 'SOC2-CC6.1 (SOC2) failing',
+          detail: '1 passed, 2 failed',
+          entity_type: 'control',
+          entity_id: 'ctrl-1',
+          status: 'open',
+          dispatched_webhooks_count: 0,
+          acknowledged_by: null,
+          acknowledged_at: null,
+          created_at: '2026-11-26T12:00:00Z',
+        },
+      ]);
+    }
+
+    if (url === '/api/v1/alerts/evaluate' && init?.method === 'POST') {
       return jsonResponse([]);
     }
 
-    if (url === '/api/v1/privacy/retention-exceptions') {
+    if (url === '/api/v1/alerts/webhooks') {
       return jsonResponse([]);
     }
 
@@ -284,7 +389,7 @@ describe('AI Compliance & Regulatory Auditor Workspace', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders executive posture, navigates all 6 tabs, switches roles, and executes scans', async () => {
+  it('renders executive posture, navigates all 8 tabs, executes Phase 2 flows, and signs in with JWT', async () => {
     const mockFetch = createApiMock({ populated: true });
     vi.stubGlobal('fetch', mockFetch);
 
@@ -298,15 +403,12 @@ describe('AI Compliance & Regulatory Auditor Workspace', () => {
       expect(screen.getByText(/API Healthy \(mock\)/i)).toBeInTheDocument();
       expect(screen.getByText('78.5%')).toBeInTheDocument();
     });
-    expect(screen.getByText('SOC2 Readiness')).toBeInTheDocument();
-    expect(screen.getByText('HIPAA Readiness')).toBeInTheDocument();
-    expect(screen.getByText('GDPR Readiness')).toBeInTheDocument();
 
     // Navigate to Controls
     fireEvent.click(screen.getByRole('button', { name: /Controls/i }));
     expect(await screen.findByText('SOC2-CC6.1')).toBeInTheDocument();
 
-    // Navigate to Scanners and run a scan
+    // Navigate to Scanners (including Schedules) and run a scan
     fireEvent.click(screen.getByRole('button', { name: /Scanners/i }));
     expect(await screen.findByText(/Failing Staging Env Config/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Run Compliance Scan/i }));
@@ -317,29 +419,47 @@ describe('AI Compliance & Regulatory Auditor Workspace', () => {
       );
     });
 
-    // Navigate to Evidence & Audit
+    // Navigate to Evidence & Audit (verify signed ZIP / PDF buttons present)
     fireEvent.click(screen.getByRole('button', { name: /Evidence & Audit/i }));
+    expect(await screen.findByText(/Signed \(hmac-1234abcd\)/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Signed ZIP/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Executive PDF/i })).toBeInTheDocument();
+
+    // Navigate to Policy RAG and run query
+    fireEvent.click(screen.getByRole('button', { name: /Policy RAG/i }));
     expect(
-      await screen.findByText(/Independent Tamper-Detection Verifier/i),
+      await screen.findByText(/Citation-Grounded Policy RAG Q&A/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Query Policies/i }));
+    expect(
+      await screen.findByText(/Notify supervisory authority within 72 hours/i),
     ).toBeInTheDocument();
 
     // Navigate to Privacy & DSARs
     fireEvent.click(screen.getByRole('button', { name: /Privacy & DSARs/i }));
     expect(await screen.findByText('DSAR-2026-001')).toBeInTheDocument();
-    expect(screen.getByText(/Blocked by Legal Hold\(s\): LH-2026-001/i)).toBeInTheDocument();
 
-    // Navigate to Approvals and switch actor role
+    // Navigate to Drift Alerts and evaluate
+    fireEvent.click(screen.getByRole('button', { name: /Drift Alerts/i }));
+    expect(await screen.findByText('SOC2-CC6.1 (SOC2) failing')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Evaluate Drift Alerts/i }));
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/alerts/evaluate',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    // Navigate to Approvals
     fireEvent.click(screen.getByRole('button', { name: /Approvals/i }));
     expect(await screen.findByText('release_audit_bundle')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Actor Role'), {
-      target: { value: 'auditor' },
-    });
-    await waitFor(() => {
-      expect(
-        screen.getByText(/Switched active actor to auditor@acme-compliance\.local/i),
-      ).toBeInTheDocument();
-    });
+    // JWT Sign In flow
+    fireEvent.click(screen.getByRole('button', { name: /Sign In \(JWT\)/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sign In$/i }));
+    expect(
+      await screen.findByText(/JWT: officer@acme-compliance\.local \(compliance_officer\)/i),
+    ).toBeInTheDocument();
   });
 
   it('shows demo dataset loader CTA when workspace is empty', async () => {

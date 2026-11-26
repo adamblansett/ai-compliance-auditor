@@ -3,12 +3,15 @@ import {
   CheckCircle2,
   Download,
   FileArchive,
+  FileText,
   KeyRound,
   ShieldAlert,
   ShieldCheck,
 } from 'lucide-react';
 import {
   compileBundle,
+  downloadBundlePdf,
+  downloadBundleZip,
   exportBundle,
   redactPiiText,
   verifyAuditChain,
@@ -34,6 +37,15 @@ interface EvidenceViewProps {
   onChainVerified: (res: AuditChainVerify) => void;
   onRefresh: () => Promise<void>;
   onNotify: (msg: string, isError?: boolean) => void;
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export function EvidenceView({
@@ -79,7 +91,7 @@ export function EvidenceView({
         frameworks,
       });
       onNotify(
-        `Compiled '${compiled.bundle_name}' (${compiled.item_count} chained items) and queued HITL release approval.`,
+        `Compiled & signed '${compiled.bundle_name}' (${compiled.item_count} chained items) and queued HITL release approval.`,
       );
       await onRefresh();
     } catch (err) {
@@ -117,21 +129,41 @@ export function EvidenceView({
     }
   }
 
-  async function handleDownloadBundle(bundleId: string) {
+  async function handleDownloadBundleJson(bundleId: string) {
     try {
       const exported = await exportBundle(actor, bundleId);
       const blob = new Blob([JSON.stringify(exported, null, 2)], {
         type: 'application/json',
       });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${exported.bundle_name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      const slug = exported.bundle_name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      triggerBlobDownload(blob, `${slug}.json`);
       onNotify(`Exported '${exported.bundle_name}' JSON package.`);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Download failed', true);
+    }
+  }
+
+  async function handleDownloadPdf(b: EvidenceBundleItem) {
+    try {
+      const blob = await downloadBundlePdf(actor, b.id);
+      const slug = b.bundle_name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      triggerBlobDownload(blob, `${slug}-attestation.pdf`);
+      onNotify(`Downloaded executive attestation PDF for '${b.bundle_name}'.`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'PDF download failed', true);
+    }
+  }
+
+  async function handleDownloadSignedZip(b: EvidenceBundleItem) {
+    try {
+      const blob = await downloadBundleZip(actor, b.id);
+      const slug = b.bundle_name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      triggerBlobDownload(blob, `${slug}-signed.zip`);
+      onNotify(
+        `Downloaded signed ZIP package (manifest, PDF, and verify_bundle.py) for '${b.bundle_name}'.`,
+      );
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'ZIP download failed', true);
     }
   }
 
@@ -209,7 +241,7 @@ export function EvidenceView({
         <div className="flex items-center gap-2">
           <FileArchive className="h-4 w-4 text-indigo-600" />
           <h2 className="text-sm font-bold text-slate-900">
-            Compile SHA-256 Hash-Chained Evidence Bundle
+            Compile Signed SHA-256 Evidence Bundle
           </h2>
         </div>
 
@@ -238,7 +270,7 @@ export function EvidenceView({
             disabled={busy || !canWrite}
             className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
           >
-            Compile &amp; Queue Release
+            Compile &amp; Sign Bundle
           </button>
         </form>
 
@@ -252,6 +284,11 @@ export function EvidenceView({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-bold text-slate-900">{b.bundle_name}</span>
                   <StatusBadge status={b.status} />
+                  {b.signature_key_id && (
+                    <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-700">
+                      Signed ({b.signature_key_id})
+                    </span>
+                  )}
                   <span className="text-slate-600">{b.item_count} items</span>
                 </div>
                 <p className="font-mono text-[11px] text-slate-500">
@@ -276,11 +313,26 @@ export function EvidenceView({
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDownloadBundle(b.id)}
+                  onClick={() => handleDownloadPdf(b)}
                   className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
                 >
+                  <FileText className="h-3 w-3" />
+                  Executive PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadSignedZip(b)}
+                  className="inline-flex items-center gap-1 rounded border border-indigo-300 bg-indigo-600 px-2.5 py-1 font-semibold text-white hover:bg-indigo-700"
+                >
                   <Download className="h-3 w-3" />
-                  Export JSON
+                  Signed ZIP
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadBundleJson(b.id)}
+                  className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  JSON
                 </button>
               </div>
             </div>

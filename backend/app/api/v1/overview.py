@@ -9,10 +9,12 @@ from app.controls.evaluator import get_posture_summary
 from app.controls.schemas import PostureSummaryOut
 from app.core.auth import Actor, get_current_actor
 from app.db.models import (
+    AlertEvent,
     ApprovalRequest,
     DsarRequest,
     EvidenceBundle,
     LegalHold,
+    PolicyDocument,
     RetentionPolicy,
     ScanFinding,
     ScanRun,
@@ -51,6 +53,8 @@ class OverviewSummaryOut(BaseModel):
     dsar_metrics: DsarMetricsOut
     active_legal_holds_count: int
     retention_metrics: RetentionMetricsOut
+    open_alerts_count: int = 0
+    policy_documents_count: int = 0
 
 
 @router.get("", response_model=OverviewSummaryOut)
@@ -125,4 +129,12 @@ async def get_overview(
         ),
         active_legal_holds_count=active_holds_count,
         retention_metrics=ret_metrics,
+        open_alerts_count=len(
+            (
+                await db.execute(select(AlertEvent.id).where(AlertEvent.status == "open"))
+            )
+            .scalars()
+            .all()
+        ),
+        policy_documents_count=len((await db.execute(select(PolicyDocument.id))).scalars().all()),
     )

@@ -68,6 +68,11 @@ class MockLLMAdapter:
                 "Deterministic Retention Verification: "
                 f"{compact[:240]} — Checked age ceilings, legal holds, and approved exceptions."
             )
+        if task_type == "policy_rag":
+            return (
+                "Citation-Grounded Policy Answer: "
+                f"{compact[:260]} — Grounded strictly in indexed internal policy sections."
+            )
         return f"Deterministic Compliance Summary: {compact[:240]}"
 
 

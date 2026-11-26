@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +10,8 @@ from app.db.session import get_db
 from app.evidence.approvals import decide_approval
 from app.evidence.chain import verify_audit_chain, verify_evidence_bundle_manifest
 from app.evidence.compiler import compile_evidence_bundle
+from app.evidence.packager import build_signed_bundle_zip
+from app.evidence.pdf_report import render_bundle_attestation_pdf
 from app.evidence.schemas import (
     ApprovalDecisionRequest,
     ApprovalRequestOut,
@@ -45,11 +49,13 @@ async def list_bundles(
 )
 async def compile_bundle_endpoint(
     payload: BundleCompileRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     llm_router: LLMRouter = Depends(get_llm_router),
     actor: Actor = Depends(require_roles("auditor", "compliance_officer", "admin")),
 ) -> EvidenceBundle:
     """Compile a tamper-evident hash-chained evidence bundle and queue HITL approval."""
+    settings = resolve_settings(request)
     return await compile_evidence_bundle(
         db,
         bundle_name=payload.bundle_name,
@@ -58,6 +64,7 @@ async def compile_bundle_endpoint(
         period_end=payload.period_end,
         llm_router=llm_router,
         actor=actor,
+        signing_key=settings.effective_signing_key,
     )
 
 
@@ -129,7 +136,58 @@ async def export_bundle(
         status=bundle.status,
         chain_head_hash=bundle.chain_head_hash,
         manifest_sha256=bundle.manifest_sha256,
+        signature_alg=bundle.signature_alg,
+        signature_key_id=bundle.signature_key_id,
+        signature_hex=bundle.signature_hex,
         manifest=bundle.manifest_json,
+    )
+
+
+def _safe_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "evidence-bundle"
+
+
+@router.get("/bundles/{bundle_id}/report.pdf")
+async def download_bundle_pdf(
+    bundle_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: Actor = Depends(get_current_actor),
+) -> Response:
+    """Download an executive PDF attestation report for an evidence bundle."""
+    bundle = await db.get(EvidenceBundle, bundle_id)
+    if bundle is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence bundle '{bundle_id}' not found.",
+        )
+    pdf_bytes = render_bundle_attestation_pdf(bundle)
+    slug = _safe_slug(bundle.bundle_name)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{slug}-attestation.pdf"'},
+    )
+
+
+@router.get("/bundles/{bundle_id}/export-zip")
+async def download_bundle_zip(
+    bundle_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: Actor = Depends(get_current_actor),
+) -> Response:
+    """Download a signed auditor ZIP package with manifest, PDF report, and CLI verifier."""
+    bundle = await db.get(EvidenceBundle, bundle_id)
+    if bundle is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence bundle '{bundle_id}' not found.",
+        )
+    zip_bytes = build_signed_bundle_zip(bundle)
+    slug = _safe_slug(bundle.bundle_name)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{slug}-signed.zip"'},
     )
 
 

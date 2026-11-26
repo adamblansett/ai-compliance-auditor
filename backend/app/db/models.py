@@ -39,7 +39,7 @@ class Control(Base):
 
 
 class ScanRun(Base):
-    """Executed policy/configuration/encryption/logging/RBAC/SOP scan run."""
+    """Executed policy/configuration/encryption/logging/RBAC/SOP/repo/URL scan run."""
 
     __tablename__ = "scan_runs"
 
@@ -170,6 +170,10 @@ class EvidenceBundle(Base):
     approval_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("approval_requests.id", ondelete="SET NULL"), nullable=True
     )
+    signature_alg: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    signature_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    signature_hex: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     released_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -270,3 +274,115 @@ class RetentionException(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class User(Base):
+    """Registered local compliance platform user for JWT login and RBAC."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(32), default="viewer")
+    password_hash: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ScheduledScan(Base):
+    """Recurring continuous compliance drift scan job definition."""
+
+    __tablename__ = "scheduled_scans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(255))
+    scan_mode: Mapped[str] = mapped_column(String(32))
+    target_ref: Mapped[str] = mapped_column(String(500))
+    target_type: Mapped[str] = mapped_column(String(32), default="full_suite")
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_scan_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scan_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PolicyDocument(Base):
+    """Uploaded SOP or policy document indexed for citation-grounded Policy RAG."""
+
+    __tablename__ = "policy_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    title: Mapped[str] = mapped_column(String(255))
+    filename: Mapped[str] = mapped_column(String(255))
+    framework: Mapped[str] = mapped_column(String(32), default="ALL", index=True)
+    version: Mapped[str] = mapped_column(String(64), default="1.0")
+    document_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    pii_redaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PolicyChunk(Base):
+    """PII-scrubbed chunk and vector embedding linked to a PolicyDocument."""
+
+    __tablename__ = "policy_chunks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("policy_documents.id", ondelete="CASCADE"), index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    section_heading: Mapped[str] = mapped_column(String(255), default="General")
+    content: Mapped[str] = mapped_column(Text)
+    embedding_json: Mapped[list[float]] = mapped_column(JSON, default=list)
+    mapped_controls_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AlertEvent(Base):
+    """Continuous compliance drift, waiver expiry, and DSAR SLA alert."""
+
+    __tablename__ = "alert_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    alert_type: Mapped[str] = mapped_column(String(64), index=True)
+    severity: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    detail: Mapped[str] = mapped_column(Text)
+    entity_type: Mapped[str] = mapped_column(String(64))
+    entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    dispatched_webhooks_count: Mapped[int] = mapped_column(Integer, default=0)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class AlertWebhook(Base):
+    """HMAC-signed webhook subscription for continuous compliance alerting."""
+
+    __tablename__ = "alert_webhooks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(120))
+    target_url: Mapped[str] = mapped_column(String(500))
+    event_types_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    secret_hmac: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_delivery_status: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

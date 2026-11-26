@@ -82,6 +82,10 @@ class EvidenceBundleOut(BaseModel):
     ai_attestation_summary: str
     compiled_by: str
     approval_id: str | None = None
+    signature_alg: str | None = None
+    signature_key_id: str | None = None
+    signature_hex: str | None = None
+    signed_at: datetime | None = None
     released_by: str | None = None
     released_at: datetime | None = None
     created_at: datetime
@@ -97,6 +101,9 @@ class EvidenceBundleExportOut(BaseModel):
     status: str
     chain_head_hash: str
     manifest_sha256: str
+    signature_alg: str | None = None
+    signature_key_id: str | None = None
+    signature_hex: str | None = None
     manifest: dict[str, Any]
 
 

@@ -4,14 +4,17 @@ from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.alerts.service import evaluate_drift_alerts
 from app.controls.evaluator import (
     ensure_default_controls,
     evaluate_all_controls,
     request_control_waiver,
 )
-from app.core.auth import Actor
+from app.core.auth import Actor, hash_password
 from app.core.config import Settings
 from app.db.models import (
+    AlertEvent,
+    AlertWebhook,
     ApprovalRequest,
     AuditEvent,
     Control,
@@ -19,10 +22,14 @@ from app.db.models import (
     DsarRequest,
     EvidenceBundle,
     LegalHold,
+    PolicyChunk,
+    PolicyDocument,
     RetentionException,
     RetentionPolicy,
     ScanFinding,
     ScanRun,
+    ScheduledScan,
+    User,
 )
 from app.evidence.compiler import compile_evidence_bundle
 from app.llm.router import LLMRouter
@@ -40,8 +47,11 @@ from app.privacy.service import (
     request_retention_exception,
     verify_retention_policies,
 )
+from app.rag.service import ingest_policy_document
 from app.scanners.collectors import SCANNER_PRESETS
 from app.scanners.engine import execute_scan
+from app.scanners.scheduler import create_scheduled_scan
+from app.scanners.schemas import ScheduledScanCreateRequest
 
 
 class SeedSummaryOut(BaseModel):
@@ -53,11 +63,20 @@ class SeedSummaryOut(BaseModel):
     legal_holds_count: int
     retention_policies_count: int
     pending_approvals_count: int
+    users_count: int = 0
+    policy_documents_count: int = 0
+    scheduled_scans_count: int = 0
+    open_alerts_count: int = 0
     message: str
 
 
 async def _clear_all_tables(db: AsyncSession) -> None:
     for model in (
+        PolicyChunk,
+        PolicyDocument,
+        ScheduledScan,
+        AlertEvent,
+        AlertWebhook,
         ControlEvaluation,
         ScanFinding,
         ScanRun,
@@ -69,6 +88,7 @@ async def _clear_all_tables(db: AsyncSession) -> None:
         ApprovalRequest,
         AuditEvent,
         Control,
+        User,
     ):
         await db.execute(delete(model))
     await db.commit()
@@ -102,6 +122,14 @@ async def seed_demo_dataset(
             .scalars()
             .all()
         )
+        users_cnt = len((await db.execute(select(User.id))).scalars().all())
+        docs_cnt = len((await db.execute(select(PolicyDocument.id))).scalars().all())
+        sched_cnt = len((await db.execute(select(ScheduledScan.id))).scalars().all())
+        alerts_cnt = len(
+            (await db.execute(select(AlertEvent.id).where(AlertEvent.status == "open")))
+            .scalars()
+            .all()
+        )
         return SeedSummaryOut(
             seeded=False,
             controls_count=len(existing_controls),
@@ -111,8 +139,39 @@ async def seed_demo_dataset(
             legal_holds_count=hold_cnt,
             retention_policies_count=pol_cnt,
             pending_approvals_count=app_cnt,
+            users_count=users_cnt,
+            policy_documents_count=docs_cnt,
+            scheduled_scans_count=sched_cnt,
+            open_alerts_count=alerts_cnt,
             message="Demo dataset already exists (pass reset=true to rebuild).",
         )
+
+    demo_pw_hash = hash_password("ComplianceDemo!2026")
+    for email, full_name, role, mfa in (
+        (
+            "officer@acme-compliance.local",
+            "Alex Rivera (Compliance Officer)",
+            "compliance_officer",
+            True,
+        ),
+        ("auditor@acme-compliance.local", "Sam Chen (Lead Auditor)", "auditor", True),
+        ("viewer@acme-compliance.local", "Jordan Taylor (External Reviewer)", "viewer", False),
+    ):
+        existing_u = (
+            await db.execute(select(User).where(User.email == email))
+        ).scalar_one_or_none()
+        if existing_u is None:
+            db.add(
+                User(
+                    email=email,
+                    full_name=full_name,
+                    role=role,
+                    password_hash=demo_pw_hash,
+                    is_active=True,
+                    mfa_enabled=mfa,
+                )
+            )
+    await db.commit()
 
     _, controls_count = await ensure_default_controls(db)
     await db.commit()
@@ -278,7 +337,75 @@ async def seed_demo_dataset(
         period_end=date.today(),
         llm_router=llm_router,
         actor=actor,
+        signing_key=settings.effective_signing_key,
     )
+
+    sop_doc_text = (
+        "# Incident Response & Breach Notification Standard\n"
+        "All security incidents must be triaged within 1 hour. Confirmed personal data or ePHI "
+        "breaches require supervisory authority notification within 72 hours under GDPR Article 33 "
+        "and HIPAA 164.308(a)(6).\n\n"
+        "# DSAR Fulfillment & Legal Hold Screening\n"
+        "Subject access, portability, and erasure requests are tracked against a 30-day SLA. "
+        "Before executing any erasure, automated screening verifies active litigation legal holds "
+        "and suspends deletion if any hold applies.\n"
+    )
+    sec_doc_text = (
+        "# Encryption, RBAC & Data Retention Policy\n"
+        "Production endpoints mandate TLS 1.2 or TLS 1.3 and AES-256-GCM KMS encryption at rest "
+        "with automated annual key rotation. Administrative and compliance officer roles enforce "
+        "MFA, least-privilege scoping, and dual-control separation of duties.\n\n"
+        "# Audit Logging & PII Scrubbing\n"
+        "Application logs emit structured JSON with correlation IDs retained for at least 90 days. "
+        "PII, SSN, MRN, DOB, and credential tokens are scrubbed before storage or cloud LLM.\n"
+    )
+    await ingest_policy_document(
+        db,
+        title="Corporate Incident Response & DSAR SOP",
+        filename="incident-dsar-sop.md",
+        framework="GDPR",
+        version="3.0",
+        raw_bytes=sop_doc_text.encode("utf-8"),
+        content=sop_doc_text,
+        settings=settings,
+        actor=actor,
+    )
+    await ingest_policy_document(
+        db,
+        title="Security Architecture, Encryption & RBAC Standard",
+        filename="security-encryption-rbac.md",
+        framework="ALL",
+        version="2.4",
+        raw_bytes=sec_doc_text.encode("utf-8"),
+        content=sec_doc_text,
+        settings=settings,
+        actor=actor,
+    )
+
+    await create_scheduled_scan(
+        db,
+        payload=ScheduledScanCreateRequest(
+            name="Hourly Staging Config Drift Check",
+            scan_mode="preset",
+            target_ref="failing-staging-config",
+            target_type="config",
+            interval_minutes=60,
+        ),
+        actor=actor,
+    )
+    await create_scheduled_scan(
+        db,
+        payload=ScheduledScanCreateRequest(
+            name="Daily Production TLS & Encryption Baseline",
+            scan_mode="preset",
+            target_ref="hardened-prod-nginx",
+            target_type="encryption",
+            interval_minutes=1440,
+        ),
+        actor=actor,
+    )
+
+    opened_alerts = await evaluate_drift_alerts(db, actor=actor)
 
     app_cnt = len(
         (
@@ -298,8 +425,13 @@ async def seed_demo_dataset(
         legal_holds_count=1,
         retention_policies_count=len(pol_specs),
         pending_approvals_count=app_cnt,
+        users_count=3,
+        policy_documents_count=2,
+        scheduled_scans_count=2,
+        open_alerts_count=len(opened_alerts),
         message=(
-            "Seeded SOC 2 / HIPAA / GDPR controls, 5 compliance scans, 3 DSARs, 1 legal hold, "
-            "4 retention policies, 1 hash-chained bundle, and 4 HITL approval gates."
+            "Seeded SOC 2 / HIPAA / GDPR controls, 5 scans, 3 DSARs, 1 legal hold, "
+            "4 retention policies, 1 signed bundle, 2 Policy RAG docs, 2 schedules, "
+            "and drift alerts."
         ),
     )

@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 from collections.abc import Callable
 from typing import Literal, cast
@@ -14,6 +15,8 @@ from app.core.config import Settings, get_settings
 ActorRole = Literal["viewer", "auditor", "compliance_officer", "admin"]
 VALID_ROLES: tuple[ActorRole, ...] = ("viewer", "auditor", "compliance_officer", "admin")
 
+_PBKDF2_ITERATIONS = 200_000
+
 
 class Actor(BaseModel):
     """Authenticated or development-scoped user/actor context."""
@@ -21,6 +24,38 @@ class Actor(BaseModel):
     email: str
     role: ActorRole
     auth_method: str
+
+
+def hash_password(password: str) -> str:
+    """Hash a plaintext password using PBKDF2-HMAC-SHA256 with a random 16-byte salt."""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        _PBKDF2_ITERATIONS,
+    )
+    return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored PBKDF2-HMAC-SHA256 hash in constant time."""
+    parts = stored_hash.split("$")
+    if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        return False
+    try:
+        iterations = int(parts[1])
+        salt = bytes.fromhex(parts[2])
+        expected_digest = bytes.fromhex(parts[3])
+    except ValueError:
+        return False
+    actual_digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        iterations,
+    )
+    return hmac.compare_digest(actual_digest, expected_digest)
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -32,17 +67,18 @@ def _b64url_decode(token_part: str) -> bytes:
     return base64.urlsafe_b64decode(token_part + padding)
 
 
-def create_access_token(
+def _sign_token(
     email: str,
     role: ActorRole,
     secret_key: str,
-    ttl_seconds: int = 3600,
+    ttl_seconds: int,
+    token_type: Literal["access", "refresh"],
 ) -> str:
-    """Create an HMAC-SHA256 signed bearer token."""
     header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode("utf-8"))
     payload_dict = {
         "sub": email,
         "role": role,
+        "typ": token_type,
         "exp": int(time.time()) + ttl_seconds,
     }
     payload = _b64url_encode(json.dumps(payload_dict, sort_keys=True).encode("utf-8"))
@@ -51,7 +87,31 @@ def create_access_token(
     return f"{header}.{payload}.{_b64url_encode(signature)}"
 
 
-def verify_access_token(token: str, secret_key: str) -> Actor:
+def create_access_token(
+    email: str,
+    role: ActorRole,
+    secret_key: str,
+    ttl_seconds: int = 3600,
+) -> str:
+    """Create an HMAC-SHA256 signed access bearer token."""
+    return _sign_token(email, role, secret_key, ttl_seconds, "access")
+
+
+def create_refresh_token(
+    email: str,
+    role: ActorRole,
+    secret_key: str,
+    ttl_seconds: int = 604800,
+) -> str:
+    """Create an HMAC-SHA256 signed refresh token."""
+    return _sign_token(email, role, secret_key, ttl_seconds, "refresh")
+
+
+def verify_access_token(
+    token: str,
+    secret_key: str,
+    expected_typ: Literal["access", "refresh"] = "access",
+) -> Actor:
     """Validate an HMAC-SHA256 bearer token and return the Actor."""
     parts = token.split(".")
     if len(parts) != 3:
@@ -86,6 +146,13 @@ def verify_access_token(token: str, secret_key: str) -> Actor:
             detail="Authentication token has expired.",
         )
 
+    token_typ = str(payload.get("typ") or "access").strip().lower()
+    if token_typ != expected_typ:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token type '{token_typ}'; expected '{expected_typ}'.",
+        )
+
     email = str(payload.get("sub") or "").strip()
     role_raw = str(payload.get("role") or "").strip().lower()
     if not email or role_raw not in VALID_ROLES:
@@ -118,7 +185,7 @@ async def get_current_actor(request: Request) -> Actor:
                 detail="Authorization header must use Bearer scheme.",
             )
         token = auth_header[7:].strip()
-        return verify_access_token(token, settings.auth_secret_key)
+        return verify_access_token(token, settings.auth_secret_key, expected_typ="access")
 
     is_prod = settings.app_env.strip().lower() == "production"
     if settings.auth_require_token or is_prod:

@@ -761,10 +761,10 @@ def _collect_rbac(content: str) -> list[CollectedCheck]:
         )
 
     mfa_fail_re = re.compile(
-        r"(?i)(?:mfa_required|require_mfa|enforce_mfa)\s*[:=]\s*(?:false|no|off)\b"
+        r"(?i)(?:mfa_required|require_mfa|enforce_mfa)[\"']?\s*[:=]\s*[\"']?(?:false|no|off)\b"
     )
     mfa_pass_re = re.compile(
-        r"(?i)(?:(?:mfa_required|require_mfa|enforce_mfa)\s*[:=]\s*true"
+        r"(?i)(?:(?:mfa_required|require_mfa|enforce_mfa)[\"']?\s*[:=]\s*[\"']?true"
         r"|aws:MultiFactorAuthPresent|webauthn|totp)"
     )
     if mfa_fail_re.search(content):
@@ -811,12 +811,12 @@ def _collect_rbac(content: str) -> list[CollectedCheck]:
         )
 
     sod_fail_re = re.compile(
-        r"(?i)(?:(?:separation_of_duties|dual_control)\s*[:=]\s*(?:false|off)"
-        r"|self_approval\s*[:=]\s*(?:true|allowed))"
+        r"(?i)(?:(?:separation_of_duties|dual_control)[\"']?\s*[:=]\s*[\"']?(?:false|off)"
+        r"|self_approval[\"']?\s*[:=]\s*[\"']?(?:true|allowed))"
     )
     sod_pass_re = re.compile(
         r"(?i)(?:(?:separation_of_duties|enforce_separation_of_duties|dual_control)"
-        r"\s*[:=]\s*true|self_approval\s*[:=]\s*(?:false|denied))"
+        r"[\"']?\s*[:=]\s*[\"']?true|self_approval[\"']?\s*[:=]\s*[\"']?(?:false|denied))"
     )
     if sod_fail_re.search(content):
         checks.append(
@@ -861,9 +861,9 @@ def _collect_rbac(content: str) -> list[CollectedCheck]:
             )
         )
 
-    ttl_re = re.compile(r"(?i)\bttl_seconds\s*[:=]\s*(\d+)\b")
-    sess_re = re.compile(r"(?i)\bsession_timeout_minutes\s*[:=]\s*(\d+)\b")
-    never_exp_re = re.compile(r"(?i)never_expire\s*[:=]\s*true\b")
+    ttl_re = re.compile(r"(?i)\bttl_seconds[\"']?\s*[:=]\s*(\d+)\b")
+    sess_re = re.compile(r"(?i)\bsession_timeout_minutes[\"']?\s*[:=]\s*(\d+)\b")
+    never_exp_re = re.compile(r"(?i)never_expire[\"']?\s*[:=]\s*[\"']?true\b")
     ttl_m = ttl_re.search(content)
     sess_m = sess_re.search(content)
 

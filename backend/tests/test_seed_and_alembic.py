@@ -25,6 +25,10 @@ async def test_demo_seed_idempotency_reset_and_overview(tmp_path: Path) -> None:
         assert body["legal_holds_count"] == 1
         assert body["retention_policies_count"] == 4
         assert body["pending_approvals_count"] == 4
+        assert body["users_count"] == 3
+        assert body["policy_documents_count"] == 2
+        assert body["scheduled_scans_count"] == 2
+        assert body["open_alerts_count"] >= 1
 
         second = await client.post("/api/v1/seed/demo", headers=OFFICER_HEADERS)
         assert second.status_code == 200
@@ -44,6 +48,8 @@ async def test_demo_seed_idempotency_reset_and_overview(tmp_path: Path) -> None:
         assert ov["audit_chain"]["valid"] is True
         assert ov["dsar_metrics"]["legal_hold_blocked"] == 1
         assert ov["retention_metrics"]["violations"] == 1
+        assert ov["open_alerts_count"] >= 1
+        assert ov["policy_documents_count"] == 2
 
 
 def test_alembic_upgrade_and_downgrade_roundtrip(tmp_path: Path) -> None:
@@ -63,6 +69,10 @@ def test_alembic_upgrade_and_downgrade_roundtrip(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
+        bundle_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(evidence_bundles)").fetchall()
+        }
     expected_tables = {
         "controls",
         "control_evaluations",
@@ -75,8 +85,17 @@ def test_alembic_upgrade_and_downgrade_roundtrip(tmp_path: Path) -> None:
         "legal_holds",
         "retention_policies",
         "retention_exceptions",
+        "users",
+        "scheduled_scans",
+        "policy_documents",
+        "policy_chunks",
+        "alert_events",
+        "alert_webhooks",
     }
     assert expected_tables.issubset(tables)
+    assert {"signature_alg", "signature_key_id", "signature_hex", "signed_at"}.issubset(
+        bundle_cols
+    )
 
     command.downgrade(cfg, "base")
     with sqlite3.connect(db_path) as conn:
